@@ -64,6 +64,7 @@ defmodule Dispatch.RegistryTest do
     {this_pid, this_node} = {self(), node()}
     assert_receive {:join, ^this_pid, %{node: ^this_node, state: :online}}, 1_000
     assert {:ok, this_node, this_pid} == Registry.find_service(type, "key")
+    assert {:ok, this_node, this_pid} == Registry.find_service(type, "key", allow_offline: true)
 
     Registry.disable_service(type, self())
     assert_receive {:leave, ^this_pid, %{node: ^this_node, state: :online}}, 1_000
@@ -74,11 +75,13 @@ defmodule Dispatch.RegistryTest do
     assert node == node()
     assert state == :offline
     assert {:error, :no_service_for_key} == Registry.find_service(type, "key")
+    assert {:ok, this_node, this_pid} == Registry.find_service(type, "key", allow_offline: true)
 
     Registry.enable_service(type, self())
     assert_receive {:leave, ^this_pid, %{node: ^this_node, state: :offline}}, 1_000
     assert_receive {:join, ^this_pid, %{node: ^this_node, state: :online}}, 1_000
     assert {:ok, this_node, this_pid} == Registry.find_service(type, "key")
+    assert {:ok, this_node, this_pid} == Registry.find_service(type, "key", allow_offline: true)
 
   end
 
@@ -129,4 +132,27 @@ defmodule Dispatch.RegistryTest do
     assert {:ok, this_node, this_pid} == Registry.find_service(type, {:abc, 1})
   end
 
+  test "using offline services", %{service_type: type} do
+    {:ok, service_1} = Agent.start(fn -> 1 end)
+    {:ok, service_2} = Agent.start(fn -> 2 end)
+    Registry.add_service(type, service_1)
+    Registry.add_service(type, service_2)
+    this_node = node()
+
+    assert {:ok, ^this_node, service} = Registry.find_service(type, "key")
+
+    other_service =
+      case service do
+        ^service_1 -> service_2
+        ^service_2 -> service_1
+      end
+
+    Registry.disable_service(type, service)
+    assert {:ok, this_node, other_service} == Registry.find_service(type, "key")
+    assert {:ok, this_node, service} == Registry.find_service(type, "key", allow_offline: true)
+
+    Registry.disable_service(type, other_service)
+    assert {:error, :no_service_for_key} == Registry.find_service(type, "key")
+    assert {:ok, this_node, service} == Registry.find_service(type, "key", allow_offline: true)
+  end
 end

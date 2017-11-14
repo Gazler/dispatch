@@ -24,6 +24,21 @@ defmodule Dispatch.Service do
     end
   end
 
+  def offline_cast(type, key, params) do
+    case Registry.find_service(type, key, allow_offline: true) do
+      {:ok, _node, pid} -> GenServer.cast(pid, params)
+      _ -> {:error, :service_unavailable}
+    end
+  end
+
+  def offline_call(type, key, params, timeout \\ 5000) do
+    case Registry.find_service(type, key, allow_offline: true) do
+      {:ok, _node, pid} -> GenServer.call(pid, params, timeout)
+      _ -> {:error, :service_unavailable}
+    end
+  end
+
+
   def multi_cast(count, type, key, params) do
     case Registry.find_multi_service(count, type, key) do
       [] -> {:error, :service_unavailable}

@@ -86,6 +86,7 @@ defmodule Dispatch.Registry do
       {:ok, "g20AAAAI4oU3ICYcsoQ="}
   """
   def disable_service(type, pid) do
+    GenServer.call(hash_ring_server(), {:disable_service, type, {node(), pid}})
     Phoenix.Tracker.update(__MODULE__, pid, type, pid, %{node: node(), state: :offline})
   end
 
@@ -142,14 +143,23 @@ defmodule Dispatch.Registry do
 
   * `type` - The type of service to retrieve
   * `key` - The key to lookup the service. Can be any elixir term
+  * `opts` - Currently `:online` is supported. Use this to ensure that
+             the service is online. `offline` services can still be
+             used for read calls.
 
   ## Examples
 
       iex> Dispatch.Registry.find_service(:uploader, "file.png")
       {:ok, :"slave1@127.0.0.1", #PID<0.153.0>}
   """
-  def find_service(type, key) do
-    with(%HashRing{} = hash_ring <- GenServer.call(hash_ring_server(), {:get, type}),
+  def find_service(type, key, opts \\ []) do
+    call_params =
+      case Keyword.get(opts, :allow_offline) do
+        true -> {:get, type, :allow_offline}
+        _ -> {:get, type}
+      end
+
+    with(%HashRing{} = hash_ring <- GenServer.call(hash_ring_server(), call_params),
          {:ok, service_info} <- HashRing.key_to_node(hash_ring, key),
               do: service_info)
     |> case do
@@ -189,45 +199,38 @@ defmodule Dispatch.Registry do
 
   @doc false
   def handle_diff(diff, state) do
-    hash_rings = GenServer.call(hash_ring_server(), :get_all)
-    hash_rings =
-      Enum.reduce(diff, hash_rings, fn {type, _} = event, hash_rings ->
-        hash_ring =
-          hash_rings
-          |> Map.get(type, HashRing.new())
-          |> remove_leaves(event, state)
-          |> add_joins(event, state)
+    events =
+      Enum.reduce(diff, %{}, fn {type, _} = event, acc ->
+        leaves = remove_leaves(event, state)
+        joins = add_joins(event, state)
 
-        Map.put(hash_rings, type, hash_ring)
+        Map.put(acc, type, {joins, leaves})
       end)
 
-    GenServer.call(hash_ring_server(), {:put_all, hash_rings})
+    GenServer.call(hash_ring_server(), {:sync, events})
     {:ok, state}
   end
 
-  defp remove_leaves(hash_ring, {type, {joins, leaves}}, state) do
-    Enum.reduce(leaves, hash_ring, fn {pid, meta}, acc ->
+  defp remove_leaves({type, {joins, leaves}}, state) do
+    Enum.reduce(leaves, [], fn {pid, meta}, acc ->
       service_info = {meta.node, pid}
-      any_joins = Enum.any?(joins, fn({jpid, %{state: meta_state}}) ->
-        jpid == pid && meta_state == :online
-      end)
+      any_joins = Enum.any?(joins, fn({jpid, _}) -> jpid == pid end)
       Phoenix.PubSub.direct_broadcast(node(), state.pubsub_server, type, {:leave, pid, meta})
       case any_joins do
         true -> acc
-        _ -> HashRing.remove_node(acc, service_info)
+        _ ->
+          type = if meta.state == :online, do: :enabled, else: :disabled
+          [{type, service_info} | acc]
       end
     end)
   end
 
-  defp add_joins(hash_ring, {type, {joins, _leaves}}, state) do
-    Enum.reduce(joins, hash_ring, fn {pid, meta}, acc ->
+  defp add_joins({type, {joins, _leaves}}, state) do
+    Enum.reduce(joins, [], fn {pid, meta}, acc ->
       service_info = {meta.node, pid}
       Phoenix.PubSub.direct_broadcast(node(), state.pubsub_server, type, {:join, pid, meta})
-      case meta.state do
-        :online ->
-          HashRing.add_node(acc, service_info)
-        _ -> acc
-      end
+      type = if meta.state == :online, do: :enabled, else: :disabled
+      [{type, service_info} | acc]
     end)
   end
 

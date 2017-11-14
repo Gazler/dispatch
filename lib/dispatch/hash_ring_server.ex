@@ -1,6 +1,8 @@
 defmodule Dispatch.HashRingServer do
   @moduledoc false
 
+  alias Dispatch.HashRings
+
   def start_link(opts \\ []) do
     name = Keyword.fetch!(opts, :name)
     opts = [name: Module.concat(name, HashRing)]
@@ -9,18 +11,26 @@ defmodule Dispatch.HashRingServer do
 
   @doc false
   def init(_) do
-    {:ok, %{hash_rings: %{}}}
+    {:ok, HashRings.new()}
   end
 
   def handle_call({:get, type}, _reply, state) do
-    {:reply, Map.get(state.hash_rings, type, {:error, :no_nodes}), state}
+    {:reply, HashRings.get(state, type), state}
   end
 
-  def handle_call(:get_all, _reply, state) do
-     {:reply, state.hash_rings, state}
+  def handle_call({:get, type, :allow_offline}, _reply, state) do
+    {:reply, HashRings.get(state, type, allow_disabled: true), state}
   end
 
-  def handle_call({:put_all, hash_rings}, _reply, state) do
-    {:reply, :ok, %{state | hash_rings: hash_rings}}
+  def handle_call({:disable_service, type, service_info}, _reply, state) do
+    {:reply, :ok, HashRings.disable(state, type, service_info)}
+  end
+
+  def handle_call({:enable_service, type, service_info}, _reply, state) do
+    {:reply, :ok, HashRings.enable(state, type, service_info)}
+  end
+
+  def handle_call({:sync, events}, _reply, state) do
+    {:reply, :ok, HashRings.sync(state, events)}
   end
 end
